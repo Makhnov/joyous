@@ -5,6 +5,8 @@ import datetime as dt
 import pytz
 import base64
 import quopri
+from contextlib import suppress
+from collections import defaultdict
 from zipfile import is_zipfile, ZipFile
 from icalendar import Calendar, Event
 from icalendar import vDatetime, vRecur, vDDDTypes, vText
@@ -17,7 +19,7 @@ from ls.joyous import __version__
 from ..models import (SimpleEventPage, MultidayEventPage, RecurringEventPage,
         MultidayRecurringEventPage, EventExceptionBase, ExtraInfoPage,
         CancellationPage, PostponementPage, RescheduleMultidayEventPage,
-        EventBase, CalendarPage)
+        ClosedForHolidaysPage, ExtCancellationPage, EventBase, CalendarPage)
 from ..utils.recurrence import Recurrence
 from ..utils.telltime import getAwareDatetime
 from .vtimezone import create_timezone
@@ -38,6 +40,9 @@ class VComponentMixin:
 class VResults:
     """The number of successes, failures and errors"""
     def __init__(self, success=0, fail=0, error=0):
+        if type(success) is bool:
+            success = int(success)
+            fail    = int(not success)
         self.success = success
         self.fail    = fail
         self.error   = error
@@ -123,14 +128,14 @@ class VCalendar(Calendar, VComponentMixin):
     def _fromCalendarPage(cls, page, request):
         vcal = cls(page)
         vevents = []
-        tzs = {}
+        tzs = defaultdict(TimeZoneSpan)
         for event in page._getAllEvents(request):
-            vevent = cls.factory.makeFromPage(event)
+            vevent = cls.factory.makeFromPage(event, vcal.page)
             vevents.append(vevent)
             for vchild in vevent.vchildren:
                 vevents.append(vchild)
             if event.tz and event.tz is not pytz.utc:
-                tzs.setdefault(event.tz, TimeZoneSpan()).add(vevent)
+                tzs[event.tz].add(vevent)
         for tz, vspan in tzs.items():
             vtz = vspan.createVTimeZone(tz)
             # Put timezones up top. The RFC doesn't require this, but everyone
@@ -142,7 +147,7 @@ class VCalendar(Calendar, VComponentMixin):
     @classmethod
     def _fromEventPage(cls, event):
         vcal = cls(cls._findCalendarFor(event))
-        vevent = cls.factory.makeFromPage(event)
+        vevent = cls.factory.makeFromPage(event, vcal.page)
         if event.tz and event.tz is not pytz.utc:
             vtz = TimeZoneSpan(vevent).createVTimeZone(event.tz)
             vcal.add_component(vtz)
@@ -197,10 +202,10 @@ class VCalendar(Calendar, VComponentMixin):
 
     def _loadEvents(self, request, vevents):
         results = VResults()
-        vmap = {}
+        vmap = defaultdict(VMatch)
         for props in vevents:
             try:
-                match = vmap.setdefault(str(props.get('UID')), VMatch())
+                match = vmap[str(props.get('UID'))]
                 vevent = self.factory.makeFromProps(props, match.parent)
                 if self.utc2local:
                     vevent._convertTZ()
@@ -226,11 +231,10 @@ class VCalendar(Calendar, VComponentMixin):
         return results
 
     def _updateEventPage(self, request, vevent, event):
-        results = VResults()
+        allOk = True
         if vevent.modifiedDt > event.latest_revision_created_at:
             vevent.toPage(event)
             _saveRevision(request, event)
-            results.success += 1
 
         vchildren  = vevent.vchildren[:]
         vchildren += [CancellationVEvent.fromExDate(vevent, exDate)
@@ -243,11 +247,10 @@ class VCalendar(Calendar, VComponentMixin):
                 self._createExceptionPage(request, event, vchild)
             else:
                 if exception.isAuthorized(request):
-                    # FIXME also record exceptions as successes?!?!
                     self._updateExceptionPage(request, vchild, exception)
                 else:
-                    results.fail += 1
-        return results
+                    allOk = False
+        return VResults(allOk)
 
     def _updateExceptionPage(self, request, vchild, exception):
         if vchild.modifiedDt > exception.latest_revision_created_at:
@@ -507,7 +510,7 @@ class VEventFactory:
         else:
             return SimpleVEvent.fromProps(props)
 
-    def makeFromPage(self, page):
+    def makeFromPage(self, page, calendar):
         if isinstance(page, SimpleEventPage):
             return SimpleVEvent.fromPage(page)
 
@@ -515,13 +518,13 @@ class VEventFactory:
             return MultidayVEvent.fromPage(page)
 
         elif isinstance(page, MultidayRecurringEventPage):
-            return MultidayRecurringVEvent.fromPage(page)
+            return MultidayRecurringVEvent.fromPage(page, calendar)
 
         elif isinstance(page, RecurringEventPage):
-            return RecurringVEvent.fromPage(page)
+            return RecurringVEvent.fromPage(page, calendar)
 
         elif isinstance(page, EventExceptionBase):
-            return RecurringVEvent.fromPage(page.overrides)
+            return RecurringVEvent.fromPage(page.overrides, calendar)
 
         else:
             raise CalendarTypeError("Unsupported page type")
@@ -671,7 +674,10 @@ class RecurringVEvent(VEvent):
     Page = RecurringEventPage
 
     @classmethod
-    def fromPage(cls, page):
+    def fromPage(cls, page, calendar):
+        if page.holidays is None and calendar is not None:
+            # make sure we all have the same holidays
+            page.holidays = calendar.holidays
         vevent = super().fromPage(page)
         minDt   = pytz.utc.localize(dt.datetime.min)
         dtstart = page._getMyFirstDatetimeFrom() or minDt
@@ -694,49 +700,56 @@ class RecurringVEvent(VEvent):
     @classmethod
     def __getExceptions(cls, page):
         vchildren = []
-        exDates   = []
-        for cancellation in CancellationPage.objects.live().child_of(page) \
-                                            .select_related("postponementpage"):
-            postponement = getattr(cancellation, "postponementpage", None)
-            if postponement:
-                vchildren.append(PostponementVEvent.fromPage(postponement))
-            else:
-                excludeDt = getAwareDatetime(cancellation.except_date,
-                                             cancellation.time_from,
-                                             cancellation.tz, dt.time.min)
-                exDates.append(excludeDt)
+        excludes = set()
+        for cancellation in CancellationPage.events.child_of(page):
+            excludeDt = getAwareDatetime(cancellation.except_date,
+                                         cancellation.time_from,
+                                         cancellation.tz, dt.time.min)
+            excludes.add(excludeDt)
+            # NB any cancellation title or details are going to be lost
+
+        for shutdown in ExtCancellationPage.events.child_of(page):
+            # TODO Consider using RANGE:THISANDFUTURE
+            for shutDate in shutdown._getMyDates(toDate=dt.date(MAX_YEAR,1,1)):
+                excludeDt = getAwareDatetime(shutDate,
+                                             shutdown.time_from,
+                                             shutdown.tz, dt.time.min)
+                excludes.add(excludeDt)
                 # NB any cancellation title or details are going to be lost
-                # vchildren.append(CancellationVEvent.fromPage(cancellation))
+                # ExtCancellationPage does not round-trip.  All imported
+                # EXDATEs become plain cancellations
 
-            # if not postponement and cancellation.cancellation_title == "":
-            #     excludeDt = getAwareDatetime(cancellation.except_date,
-            #                                  cancellation.time_from,
-            #                                  cancellation.tz, dt.time.min)
-            #     exDates.append(excludeDt)
-            # else:
-            #     if cancellation.title != "":
-            #         vchildren.append(CancellationVEvent.fromPage(cancellation))
-            #     if postponement:
-            #         vchildren.append(PostponementVEvent.fromPage(postponement))
-
-        closedHols = page._getClosedForHolidays()
+        closedHols = ClosedForHolidaysPage.events.hols(page.holidays)        \
+                                          .child_of(page).first()
         if closedHols is not None:
-            cancellationExDates = set(exDates)
             for closedDate in closedHols._getMyDates():
                 if closedDate.year > MAX_YEAR:
                     break
                 excludeDt = getAwareDatetime(closedDate,
                                              closedHols.time_from,
                                              closedHols.tz, dt.time.min)
-                if excludeDt not in cancellationExDates:
-                    # avoid duplicate exdates
-                    exDates.append(excludeDt)
+                excludes.add(excludeDt)
                 # NB any cancellation title or details are going to be lost
                 # ClosedForHolidaysPage does not round-trip.  All imported
                 # EXDATEs become plain cancellations
 
-        for info in ExtraInfoPage.objects.live().child_of(page):
-            vchildren.append(ExtraInfoVEvent.fromPage(info))
+        for info in ExtraInfoPage.events.child_of(page):
+            excludeDt = getAwareDatetime(info.except_date,
+                                         info.time_from,
+                                         info.tz, dt.time.min)
+            if excludeDt not in excludes:
+                vchildren.append(ExtraInfoVEvent.fromPage(info))
+
+        for postponement in PostponementPage.events.child_of(page):
+            excludeDt = getAwareDatetime(postponement.except_date,
+                                         postponement.overrides.time_from,
+                                         postponement.tz, dt.time.min)
+            # Important that this remove is done after the ExtraInfo check
+            excludes.remove(excludeDt)
+            vchildren.append(PostponementVEvent.fromPage(postponement))
+
+        exDates = list(excludes)
+        exDates.sort()
         return vchildren, exDates
 
     def toPage(self, page):

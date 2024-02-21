@@ -25,6 +25,9 @@
 import datetime as dt
 import icalendar
 import pytz
+from datetime import timedelta
+from pytz import timezone as pytz_timezone
+from zoneinfo import ZoneInfo
 
 def to_naive_utc(dtime):
     """convert a datetime object to UTC and than remove the tzinfo, if
@@ -39,38 +42,37 @@ def to_naive_utc(dtime):
 
 def create_timezone(tz, first_date=None, last_date=None):
     """
-    create an icalendar vtimezone from a pytz.tzinfo object
-
-    :param tz: the timezone
-    :type tz: pytz.tzinfo
-    :param first_date: the very first datetime that needs to be included in the
-    transition times, typically the DTSTART value of the (first recurring)
-    event
-    :type first_date: datetime.datetime
-    :param last_date: the last datetime that needs to included, typically the
-    end of the (very last) event (of a recursion set)
+    create an icalendar vtimezone from a tzinfo object
+    :param tz: the timezone, can be either pytz.tzinfo or zoneinfo.ZoneInfo
+    :param first_date: the very first datetime that needs to be included
+    :param last_date: the last datetime that needs to included
     :returns: timezone information
     :rtype: icalendar.Timezone()
-
-    we currently have a problem here:
-
-       pytz.timezones only carry the absolute dates of time zone transitions,
-       not their RRULEs. This will a) make for rather bloated VTIMEZONE
-       components, especially for long recurring events, b) we'll need to
-       specify for which time range this VTIMEZONE should be generated and c)
-       will not be valid for recurring events that go into eternity.
-
-    Possible Solutions:
-
-    As this information is not provided by pytz at all, there is no
-    easy solution, we'd really need to ship another version of the OLSON DB.
-
     """
-    if isinstance(tz, pytz.tzinfo.StaticTzInfo):
-        return _create_timezone_static(tz)
+    timezone = icalendar.Timezone()
+    tzname = getattr(tz, 'zone', str(tz))
+    timezone.add('TZID', tzname)
 
-    first_date = dt.datetime.today() if not first_date else to_naive_utc(first_date)
-    last_date = dt.datetime.today() if not last_date else to_naive_utc(last_date)
+    # For Static Timezones (no DST transitions)
+    if isinstance(tz, dt.tzinfo) and not hasattr(tz, '_utc_transition_times'):
+        subcomp = icalendar.TimezoneStandard()
+        offset = tz.utcoffset(None)
+        offset_seconds = 0
+        offset = timedelta(seconds=offset_seconds)
+        subcomp.add('TZNAME', tzname)
+        subcomp.add('DTSTART', dt.datetime(1601, 1, 1))        
+        subcomp.add('TZOFFSETTO', offset)
+        subcomp.add('TZOFFSETFROM', offset)
+        timezone.add_component(subcomp)
+        return timezone
+
+    # For Dynamic Timezones (with DST transitions)
+    if isinstance(tz, ZoneInfo):
+        # Convert ZoneInfo to pytz timezone for compatibility
+        tz = pytz_timezone(tz.key)
+
+    first_date = dt.datetime.now(tz) if not first_date else first_date.astimezone(tz)
+    last_date = dt.datetime.now(tz) if not last_date else last_date.astimezone(tz)
     timezone = icalendar.Timezone()
     timezone.add('TZID', tz)
 
@@ -126,8 +128,15 @@ def create_timezone(tz, first_date=None, last_date=None):
         subcomp.add(
             'DTSTART',
             tz.fromutc(tz._utc_transition_times[num]).replace(tzinfo=None))
-        subcomp.add('TZOFFSETTO', tz._transition_info[num][0])
-        subcomp.add('TZOFFSETFROM', tz._transition_info[num - 1][0])
+
+        # S'assurer que les décalages sont des instances de timedelta
+        tzoffsetto = tz._transition_info[num][0]
+        tzoffsetfrom = tz._transition_info[num - 1][0]
+        if not (isinstance(tzoffsetto, dt.timedelta) and isinstance(tzoffsetfrom, dt.timedelta)):
+            raise ValueError("TZOFFSET values must be timedelta instances")
+
+        subcomp.add('TZOFFSETTO', tzoffsetto)
+        subcomp.add('TZOFFSETFROM', tzoffsetfrom)
         timezones[name] = subcomp
 
     for subcomp in timezones.values():
@@ -148,9 +157,14 @@ def _create_timezone_static(tz):
     timezone.add('TZID', tz)
     subcomp = icalendar.TimezoneStandard()
     subcomp.add('TZNAME', tz)
+    
+    # On vérifie que tz._utcoffset est un timedelta
+    offset = tz.utcoffset(None)
+    if not isinstance(offset, dt.timedelta):
+        raise ValueError(f"Expected timedelta, got {type(offset)}")
+    
     subcomp.add('DTSTART', dt.datetime(1601, 1, 1))
-    subcomp.add('RDATE', dt.datetime(1601, 1, 1))
-    subcomp.add('TZOFFSETTO', tz._utcoffset)
-    subcomp.add('TZOFFSETFROM', tz._utcoffset)
+    subcomp.add('TZOFFSETTO', offset)
+    subcomp.add('TZOFFSETFROM', offset)
     timezone.add_component(subcomp)
     return timezone

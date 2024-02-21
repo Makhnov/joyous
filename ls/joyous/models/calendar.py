@@ -13,10 +13,9 @@ from django.shortcuts import redirect
 from django.template.response import TemplateResponse
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
-from wagtail.admin.forms import WagtailAdminPageForm
-from wagtail.core.models import Page
-from wagtail.core.fields import RichTextField
-from wagtail.admin.edit_handlers import HelpPanel, FieldPanel, MultiFieldPanel
+from wagtail.models import Page, Site
+from wagtail.fields import RichTextField
+from wagtail.admin.panels import HelpPanel, FieldPanel, MultiFieldPanel
 from wagtail.contrib.routable_page.models import RoutablePageMixin, route
 from wagtail.search import index
 from .. import __version__
@@ -29,9 +28,13 @@ from ..utils.mixins import ProxyPageMixin
 from ..fields import MultipleSelectField
 from . import (getAllEventsByDay, getAllEventsByWeek, getAllUpcomingEvents,
                getAllPastEvents, getEventFromUid, getAllEvents)
+from ..forms import FormDefender, BorgPageForm
+
+# Modèle commun aux page de menu
+from home.models import MenuPage
 
 # ------------------------------------------------------------------------------
-class CalendarPageForm(WagtailAdminPageForm):
+class CalendarPageForm(BorgPageForm):
     importHandler = None
     exportHandler = None
 
@@ -106,10 +109,11 @@ DatePictures = {"YYYY":  r"((?:19|20)\d\d)",
 
 EVENTS_VIEW_CHOICES = [('L', _("List View")),
                        ('W', _("Weekly View")),
-                       ('M', _("Monthly View"))]
+                       ('M', _("Monthly View")),  
+                       ('D', _("Daily View"))]
 
 # ------------------------------------------------------------------------------
-class CalendarPage(RoutablePageMixin, Page):
+class CalendarPage(RoutablePageMixin, MenuPage, metaclass=FormDefender):
     """CalendarPage displays all the events which are in the same site."""
     class Meta:
         verbose_name = _("calendar page")
@@ -126,14 +130,14 @@ class CalendarPage(RoutablePageMixin, Page):
     intro = RichTextField(_("intro"), blank=True,
                           help_text=_("Introductory text."))
     view_choices = MultipleSelectField(_("view choices"), blank=True,
-                                       default=["L","W","M"],
+                                       default=["L","W","M","D"],
                                        choices=EVENTS_VIEW_CHOICES)
     default_view = models.CharField(_("default view"),
                                     default="M", max_length=15,
                                     choices=EVENTS_VIEW_CHOICES)
 
-    search_fields = Page.search_fields[:]
-    content_panels = Page.content_panels + [
+    search_fields = MenuPage.search_fields[:]
+    content_panels = MenuPage.content_panels + [
         FieldPanel('intro', classname="full"),
         ]
     settings_panels = Page.settings_panels + [
@@ -152,10 +156,12 @@ class CalendarPage(RoutablePageMixin, Page):
             return self.serveUpcoming(request)
         elif eventsView in ("W", "weekly"):
             return self.serveWeek(request, year)
+        elif eventsView in ("D", "daily"):
+            return self.serveDay(request)
         else:
             return self.serveMonth(request, year)
 
-    @route(r"^{YYYY}/{Mon}/$(?i)".format(**DatePictures))
+    @route(r"^{YYYY}/{Mon}/$".format(**DatePictures))
     def routeByMonthAbbr(self, request, year, monthAbbr):
         """Route a request with a month abbreviation to the monthly view."""
         month = (DatePictures['Mon'].index(monthAbbr.lower()) // 4) + 1
@@ -184,7 +190,8 @@ class CalendarPage(RoutablePageMixin, Page):
         weeklyUrl = myurl + self.reverse_subpage('serveWeek',
                                                  args=[weekYear, weekNum])
         listUrl = myurl + self.reverse_subpage('serveUpcoming')
-
+        dailyUrl = myurl + self.reverse_subpage('serveDay')
+        
         prevMonth = month - 1
         prevMonthYear = year
         if prevMonth == 0:
@@ -209,6 +216,7 @@ class CalendarPage(RoutablePageMixin, Page):
                     'nextYearUrl':  myUrl(year + 1, month),
                     'weeklyUrl':    weeklyUrl,
                     'listUrl':      listUrl,
+                    'dailyUrl':     dailyUrl,
                     'thisMonthUrl': myUrl(today.year, today.month),
                     'monthName':    MONTH_NAMES[month],
                     'weekdayAbbr':  weekday_abbr,
@@ -250,6 +258,8 @@ class CalendarPage(RoutablePageMixin, Page):
         else:
             monthlyUrl = myurl + self.reverse_subpage('serveMonth', args=[1900, 1])
         listUrl = myurl + self.reverse_subpage('serveUpcoming')
+        dailyUrl = myurl + self.reverse_subpage('serveDay')
+
         lastDayOfMonth = dt.date(firstDay.year, firstDay.month,
                                  calendar.monthrange(firstDay.year, firstDay.month)[1])
 
@@ -278,6 +288,7 @@ class CalendarPage(RoutablePageMixin, Page):
                     'thisWeekUrl':  myUrl(thisYear, thisWeekNum),
                     'monthlyUrl':   monthlyUrl,
                     'listUrl':      listUrl,
+                    'dailyUrl':     dailyUrl,
                     'weekName':     _("Week {weekNum}").format(weekNum=week),
                     'weekdayAbbr':  weekday_abbr,
                     'events':       [eventsInWeek]})
@@ -304,10 +315,16 @@ class CalendarPage(RoutablePageMixin, Page):
         day = dt.date(year, month, dom)
 
         daysEvents = self._getEventsOnDay(request, day).all_events
-        if len(daysEvents) == 1:
-            event = daysEvents[0].page
-            return redirect(event.get_url(request))
+        # if len(daysEvents) == 1:
+        #     event = daysEvents[0].page
+        #     return redirect(event.get_url(request))
         eventsPage = self._paginate(request, daysEvents)
+
+        yesterday = day - dt.timedelta(days=1)
+        tomorrow = day + dt.timedelta(days=1)
+        yesterdayUrl = myurl + self.reverse_subpage('serveDay', args=[yesterday.year, yesterday.month, yesterday.day])
+        tomorrowUrl = myurl + self.reverse_subpage('serveDay', args=[tomorrow.year, tomorrow.month, tomorrow.day])
+
 
         monthlyUrl = myurl + self.reverse_subpage('serveMonth',
                                                   args=[year, month])
@@ -315,14 +332,19 @@ class CalendarPage(RoutablePageMixin, Page):
         weeklyUrl = myurl + self.reverse_subpage('serveWeek',
                                                  args=[weekYear, weekNum])
         listUrl = myurl + self.reverse_subpage('serveUpcoming')
-
+        todayUrl = myurl + self.reverse_subpage('serveDay')
+        
         cxt = self._getCommonContext(request)
         cxt.update({'year':         year,
                     'month':        month,
                     'dom':          dom,
                     'day':          day,
-                    'monthlyUrl':   monthlyUrl,
+                    'today':        today,
+                    'todayUrl':     todayUrl,
+                    'yesterdayUrl':    yesterdayUrl,
+                    'tomorrowUrl':     tomorrowUrl,
                     'weeklyUrl':    weeklyUrl,
+                    'monthlyUrl':   monthlyUrl,
                     'listUrl':      listUrl,
                     'monthName':    MONTH_NAMES[month],
                     'weekdayName':  WEEKDAY_NAMES[day.weekday()],
@@ -343,6 +365,7 @@ class CalendarPage(RoutablePageMixin, Page):
         weeklyUrl = myurl + self.reverse_subpage('serveWeek',
                                                  args=[weekYear, weekNum])
         listUrl = myurl + self.reverse_subpage('servePast')
+        dailyUrl = myurl + self.reverse_subpage('serveDay')        
         upcomingEvents = self._getUpcomingEvents(request)
         eventsPage = self._paginate(request, upcomingEvents)
 
@@ -350,6 +373,7 @@ class CalendarPage(RoutablePageMixin, Page):
         cxt.update({'weeklyUrl':    weeklyUrl,
                     'monthlyUrl':   monthlyUrl,
                     'listUrl':      listUrl,
+                    'dailyUrl':     dailyUrl,
                     'events':       eventsPage})
         cxt.update(self._getExtraContext("upcoming"))
         return TemplateResponse(request,
@@ -367,13 +391,15 @@ class CalendarPage(RoutablePageMixin, Page):
         weeklyUrl = myurl + self.reverse_subpage('serveWeek',
                                                  args=[weekYear, weekNum])
         listUrl = myurl + self.reverse_subpage('serveUpcoming')
+        dailyUrl = myurl + self.reverse_subpage('serveDay')
         pastEvents = self._getPastEvents(request)
         eventsPage = self._paginate(request, pastEvents)
 
         cxt = self._getCommonContext(request)
         cxt.update({'weeklyUrl':    weeklyUrl,
                     'monthlyUrl':   monthlyUrl,
-                    'listUrl':      listUrl,
+                    'listUrl':      listUrl,                
+                    'dailyUrl':     dailyUrl,
                     'events':       eventsPage})
         cxt.update(self._getExtraContext("past"))
         return TemplateResponse(request,
@@ -383,7 +409,7 @@ class CalendarPage(RoutablePageMixin, Page):
     @route(r"^mini/{YYYY}/{MM}/$".format(**DatePictures))
     def serveMiniMonth(self, request, year=None, month=None):
         """Serve data for the MiniMonth template tag."""
-        if not request.is_ajax():
+        if request.headers.get('x-requested-with') != 'XMLHttpRequest':
             raise Http404("/mini/ is for ajax requests only")
 
         today = timezone.localdate()
@@ -432,6 +458,7 @@ class CalendarPage(RoutablePageMixin, Page):
                     'listLink':     None,
                     'weeklyLink':   None,
                     'monthlyLink':  None,
+                    'dailyLink':    None,
                    })
         return cxt
 
@@ -446,7 +473,7 @@ class CalendarPage(RoutablePageMixin, Page):
         """
         Return the events in this site for the dates given, grouped by day.
         """
-        home = request.site.root_page
+        home = Site.find_for_request(request).root_page
         return getAllEventsByDay(request, firstDay, lastDay,
                                  home=home, holidays=self.holidays)
 
@@ -454,32 +481,32 @@ class CalendarPage(RoutablePageMixin, Page):
         """
         Return the events in this site for the given month grouped by week.
         """
-        home = request.site.root_page
+        home = Site.find_for_request(request).root_page
         return getAllEventsByWeek(request, year, month,
                                   home=home, holidays=self.holidays)
 
     def _getUpcomingEvents(self, request):
         """Return the upcoming events in this site."""
-        home = request.site.root_page
+        home = Site.find_for_request(request).root_page
         return getAllUpcomingEvents(request, home=home, holidays=self.holidays)
 
     def _getPastEvents(self, request):
         """Return the past events in this site."""
-        home = request.site.root_page
+        home = Site.find_for_request(request).root_page
         return getAllPastEvents(request, home=home, holidays=self.holidays)
 
     def _getEventFromUid(self, request, uid):
         """Try and find an event with the given UID in this site."""
         event = getEventFromUid(request, uid) # might raise exception
-        home = request.site.root_page
+        home = Site.find_for_request(request).root_page
         if event.get_ancestors().filter(id=home.id).exists():
             # only return event if it is in the same site
             return event
 
     def _getAllEvents(self, request):
         """Return all the events in this site."""
-        home = request.site.root_page
-        return getAllEvents(request, home=home)
+        home = Site.find_for_request(request).root_page
+        return getAllEvents(request, home=home, holidays=self.holidays)
 
     def _paginate(self, request, events):
         paginator = Paginator(events, self.EventsPerPage)
@@ -536,7 +563,7 @@ class SpecificCalendarPage(ProxyPageMixin, CalendarPage):
 
     def _getAllEvents(self, request):
         """Return all my child events."""
-        return getAllEvents(request, home=self)
+        return getAllEvents(request, home=self, holidays=self.holidays)
 
 # ------------------------------------------------------------------------------
 class GeneralCalendarPage(ProxyPageMixin, CalendarPage):
@@ -579,7 +606,7 @@ class GeneralCalendarPage(ProxyPageMixin, CalendarPage):
 
     def _getAllEvents(self, request):
         """Return all the events."""
-        return getAllEvents(request)
+        return getAllEvents(request, holidays=self.holidays)
 
 # ------------------------------------------------------------------------------
 # ------------------------------------------------------------------------------

@@ -5,10 +5,12 @@
 from django.templatetags.static import static
 from django.http import HttpResponse
 from django.utils.html import format_html
-from wagtail.core import hooks
-from wagtail.contrib.modeladmin.options import ModelAdmin
-from wagtail.contrib.modeladmin.options import modeladmin_register
-from .models import EventCategory, CalendarPage, CalendarPageForm
+from wagtail import hooks
+from wagtail.models import PageViewRestriction
+from wagtail_modeladmin.options import ModelAdmin
+from wagtail_modeladmin.options import modeladmin_register
+
+from .models import EventCategory, CalendarPage, CalendarPageForm, SimpleEventPage
 from .formats import NullHandler, ICalHandler, GoogleCalendarHandler, RssHandler
 
 # ------------------------------------------------------------------------------
@@ -46,7 +48,34 @@ class EventCategoryAdmin(ModelAdmin):
     list_filter = ()
     search_fields = ('name',)
 
-modeladmin_register(EventCategoryAdmin)
+# modeladmin_register(EventCategoryAdmin)
 
 # ------------------------------------------------------------------------------
 # ------------------------------------------------------------------------------
+
+@hooks.register("after_create_page")
+@hooks.register("after_edit_page")
+def apply_simple_event_restrictions(request, page):
+    if isinstance(page, SimpleEventPage):
+        # Récupérer la convocation associée, si elle existe
+        convocation = page.convocation
+        if convocation:
+            # Récupérer la page parente de la convocation
+            parent_page = convocation.get_parent().specific
+            # Appliquer les restrictions de vue de la page parente à la SimpleEventPage
+            apply_restrictions(page, parent_page)
+
+def apply_restrictions(event_page, parent_page):
+    # Suppression des restrictions existantes
+    event_page.get_view_restrictions().delete()
+
+    # Copie des restrictions de la page parente
+    for restriction in parent_page.get_view_restrictions().all():
+        new_restriction = PageViewRestriction.objects.create(
+            page=event_page,
+            restriction_type=restriction.restriction_type,
+            password=restriction.password,
+        )
+        # Ajout des restrictions
+        for group in restriction.groups.all():
+            new_restriction.groups.add(group)

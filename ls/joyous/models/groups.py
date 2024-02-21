@@ -5,9 +5,9 @@ from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.db import models
 from django.utils.translation import gettext_lazy as _
-from wagtail.core.models import Page
-from wagtail.core.fields import RichTextField
-from wagtail.admin.edit_handlers import FieldPanel
+from wagtail.models import Page
+from wagtail.fields import RichTextField
+from wagtail.admin.panels import FieldPanel
 
 # ------------------------------------------------------------------------------
 # Events can belong to groups
@@ -65,6 +65,9 @@ class GroupPage(Page):
     content_panels = Page.content_panels + [
         FieldPanel('content', classname="full"),
         ]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
     def get_context(self, request, *args, **kwargs):
         retval = super().get_context(request, *args, **kwargs)

@@ -16,7 +16,8 @@ from wagtail.admin.widgets import AdminDateInput, AdminTimeInput
 from dateutil.parser import parse as dt_parse
 from .utils.recurrence import Weekday, Recurrence, DAILY, WEEKLY, MONTHLY, YEARLY
 from .utils.manythings import toTheOrdinal
-from .utils.names import WEEKDAY_NAMES, WEEKDAY_ABBRS, MONTH_ABBRS
+from .utils.names import WEEKDAY_NAMES_DEFINITIVE, WEEKDAY_ABBRS, MONTH_ABBRS
+from .utils.weeks import getFirstDayOfWeek
 
 # ------------------------------------------------------------------------------
 class Time12hrInput(AdminTimeInput):
@@ -69,8 +70,8 @@ class RecurrenceWidget(MultiWidget):
                        (5,    toTheOrdinal(5)),
                        (-1,   toTheOrdinal(-1))]
         dayOptions1  = enumerate(WEEKDAY_ABBRS)
-        dayOptions2  = [(None, "")] + list(enumerate(WEEKDAY_NAMES))
-        dayOptions3  = list(enumerate(WEEKDAY_NAMES)) +\
+        dayOptions2  = [(None, "")] + list(enumerate(WEEKDAY_NAMES_DEFINITIVE))
+        dayOptions3  = list(enumerate(WEEKDAY_NAMES_DEFINITIVE)) +\
                        [(DAY_OF_MONTH, _("Day of the month"))]
         monthOptions = enumerate(MONTH_ABBRS[1:], 1)
 
@@ -249,7 +250,7 @@ class ExceptionDateInput(AdminDateInput):
     def get_context(self, name, value, attrs):
         context = super().get_context(name, value, attrs)
         config = {
-            'dayOfWeekStart': get_format('FIRST_DAY_OF_WEEK'),
+            'dayOfWeekStart': getFirstDayOfWeek(),
             'format':         self.js_format,
         }
         context['widget']['valid_dates'] = json.dumps(self.valid_dates())

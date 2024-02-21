@@ -2,7 +2,7 @@
 {% load wagtailcore_tags i18n %}
 
 {% block view_choices %}
-{% include "joyous/includes/events_view_choices.html" with weeklyUrl=thisWeekUrl weeklyLink=_("This Week") %}
+{% include "joyous/includes/events_view_choices.html" with weeklyUrl=thisWeekUrl %}
 {% endblock view_choices %}
 
 {% block cal_view_class %}joy-cal--weekly{% endblock %}
