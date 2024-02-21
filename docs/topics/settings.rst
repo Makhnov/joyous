@@ -91,8 +91,6 @@ See :ref:`calendarholidays`.
 ``JOYOUS_RSS_FEED_IMAGE``
 ---------------------------------
 
-Default: ``"/static/joyous/img/logo.png"``
-
 This is the image that is displayed on RSS for your channel.
 
 

@@ -35,7 +35,6 @@ def fullUrl(url, page, request):
 # ------------------------------------------------------------------------------
 class CalendarFeed(FeedGenerator):
     """Produce a feed of upcoming events"""
-    imagePath = static("joyous/img/logo.png")
 
     @classmethod
     def fromPage(cls, page, request):
