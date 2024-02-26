@@ -18,10 +18,6 @@ class Migration(migrations.Migration):
 
     initial = True
 
-    dependencies = [
-        ('administration', '0002_initial'),
-    ]
-
     operations = [
         migrations.CreateModel(
             name='EventCategory',
