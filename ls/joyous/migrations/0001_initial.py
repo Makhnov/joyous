@@ -20,7 +20,6 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('administration', '0002_initial'),
-        ('images', '0002_initial'),
     ]
 
     operations = [
