@@ -31,7 +31,7 @@ from . import (getAllEventsByDay, getAllEventsByWeek, getAllUpcomingEvents,
 from ..forms import FormDefender, BorgPageForm
 
 # Modèle commun aux page de menu
-from home.models import MenuPage
+from utils.menu_pages import MenuPage, menu_page_save
 
 # ------------------------------------------------------------------------------
 class CalendarPageForm(BorgPageForm):
@@ -117,14 +117,17 @@ class CalendarPage(RoutablePageMixin, MenuPage, metaclass=FormDefender):
     """CalendarPage displays all the events which are in the same site."""
     class Meta:
         verbose_name = _("calendar page")
-        verbose_name_plural = _("calendar pages")
-
-    EventsPerPage = getattr(settings, "JOYOUS_EVENTS_PER_PAGE", 25)
-    holidays = Holidays()
+        verbose_name_plural = _("calendar pages")        
+    
+    save = menu_page_save('calendrier')
+    parent_page_types = ['home.HomePage']
     subpage_types = ['joyous.SimpleEventPage',
                      'joyous.MultidayEventPage',
                      'joyous.RecurringEventPage',
                      'joyous.MultidayRecurringEventPage']
+    
+    EventsPerPage = getattr(settings, "JOYOUS_EVENTS_PER_PAGE", 25)
+    holidays = Holidays()    
     base_form_class = CalendarPageForm
 
     intro = RichTextField(_("intro"), blank=True,
@@ -136,10 +139,6 @@ class CalendarPage(RoutablePageMixin, MenuPage, metaclass=FormDefender):
                                     default="M", max_length=15,
                                     choices=EVENTS_VIEW_CHOICES)
 
-    search_fields = MenuPage.search_fields[:]
-    content_panels = MenuPage.content_panels + [
-        FieldPanel('intro', classname="full"),
-        ]
     settings_panels = Page.settings_panels + [
         MultiFieldPanel([
             FieldPanel('view_choices'),
