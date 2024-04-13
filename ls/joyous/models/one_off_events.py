@@ -66,11 +66,9 @@ class SimpleEventPage(EventBase, Page, metaclass=FormDefender):
         verbose_name_plural = _("event pages")
         default_manager_name = "objects"
 
-    parent_page_types = ["joyous.CalendarPage",
-                         "joyous.SpecificCalendarPage",
-                         "joyous.GeneralCalendarPage",
-                         get_group_model_string()]
+    parent_page_types = ["joyous.CalendarPage"]
     subpage_types = []
+    
     base_form_class = EventPageForm
 
     convocation = models.OneToOneField(
@@ -175,11 +173,9 @@ class MultidayEventPage(EventBase, Page, metaclass=FormDefender):
         verbose_name_plural = _("multiday event pages")
         default_manager_name = "objects"
 
-    parent_page_types = ["joyous.CalendarPage",
-                         "joyous.SpecificCalendarPage",
-                         "joyous.GeneralCalendarPage",
-                         get_group_model_string()]
+    parent_page_types = ["joyous.CalendarPage"]
     subpage_types = []
+    
     base_form_class = MultidayEventPageForm
 
     date_from = models.DateField(_("start date"), default=dt.date.today)
